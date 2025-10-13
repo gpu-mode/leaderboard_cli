@@ -122,6 +122,57 @@ Show details of a specific submission by ID.
 **Arguments:**
 - `submission_id`: The ID of the submission to display
 
+## Submission Modes
+
+The CLI supports two modes for handling submissions:
+
+### Local-Only Mode (Default)
+
+By default, all submissions are stored **only** in your local SQLite database. No network requests are made.
+
+```bash
+# Local-only (default)
+leaderboard submit --dsl triton --device A100 --file kernel.py
+```
+
+**What happens:**
+- ✅ File is stored in local database (`~/.leaderboard/submissions.db`)
+- ❌ No network request is made
+- ✅ Works completely offline
+
+### Remote Submission Mode
+
+Optionally, you can also send submissions to a remote API endpoint (e.g., a leaderboard server):
+
+```bash
+# Submit both locally AND to a remote server
+leaderboard submit \
+  --dsl triton \
+  --device A100 \
+  --file kernel.py \
+  --local-only false \
+  --endpoint https://your-server.com/api/submit
+```
+
+**What happens:**
+- ✅ File is stored in local database (same as local-only mode)
+- ✅ Also sends HTTP POST request to the specified endpoint
+- ✅ You keep a local copy regardless of network status
+
+**JSON sent to endpoint:**
+```json
+{
+  "operation": "add",
+  "overload": "Tensor",
+  "dsl": "triton",
+  "device": "A100",
+  "file_name": "kernel.py",
+  "file_content": "... full file content ..."
+}
+```
+
+> **Note:** Remote submission requires a backend server at the specified endpoint. By default, no server is provided
+
 ## Data Storage
 
 Submissions are stored in a local SQLite database at:

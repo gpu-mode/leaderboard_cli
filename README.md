@@ -128,6 +128,14 @@ Clear authentication and log out
 #### `leaderboard whoami`
 Show current authenticated user
 
+### Evaluation Tracking Commands
+
+#### `leaderboard pending`
+View submissions awaiting evaluation
+
+#### `leaderboard stats`
+Show statistics dashboard (total submissions, pending evaluations, evaluated count, total users)
+
 ### `leaderboard submit`
 
 Submit kernel implementation(s) to the server. **Requires authentication.**
@@ -143,12 +151,13 @@ Submit kernel implementation(s) to the server. **Requires authentication.**
 
 ### `leaderboard list`
 
-List submitted kernels from the server.
+List submitted kernels from the server. Shows status indicators (⏳ pending / ✓ evaluated).
 
 **Options:**
 - `--op, --operation`: Filter by operation type
 - `--dsl`: Filter by DSL type
 - `--device`: Filter by device type
+- `--status`: Filter by status (pending, evaluated)
 - `--limit`: Maximum number of results (default: 20)
 - `--endpoint`: API base URL (default: http://localhost:8000)
 
@@ -185,6 +194,8 @@ Show details of a specific submission by ID.
 - File name and content
 - Timestamp
 - User who submitted
+- Evaluation status (pending/evaluated)
+- Evaluation result and timestamp
 
 ## Examples
 
@@ -212,6 +223,19 @@ leaderboard submit \
 
 ```bash
 leaderboard list --op add --limit 5
+```
+
+### Example 4: Check evaluation status
+
+```bash
+# View pending evaluations
+leaderboard pending
+
+# Check statistics
+leaderboard stats
+
+# Filter by status
+leaderboard list --status pending
 ```
 
 ## Development

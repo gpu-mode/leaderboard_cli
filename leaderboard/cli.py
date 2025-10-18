@@ -1,16 +1,13 @@
-"""Main CLI interface for BackendBench."""
-
 import click
-import os
-from pathlib import Path
+import requests
 from typing import Optional
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
-from rich import print as rprint
+from rich.prompt import Prompt
 
-from .database import SubmissionDB
 from .submit import submit_single_kernel, submit_directory_kernels
+from .config import save_token, load_token, load_config, clear_token
 
 
 console = Console()
@@ -30,8 +27,7 @@ def cli():
 @click.option('--device', required=True, help='Device type (e.g., A100, H100)')
 @click.option('--file', 'file_path', type=click.Path(exists=True), help='Path to kernel file')
 @click.option('--directory', 'directory_path', type=click.Path(exists=True), help='Path to directory containing kernels')
-@click.option('--endpoint', default='http://localhost:8000/submit', help='API endpoint URL')
-@click.option('--local-only', is_flag=True, default=True, help='Store submissions locally only (default: True)')
+@click.option('--endpoint', default='http://localhost:8000/api/submit', help='API endpoint URL')
 def submit(
     operation: Optional[str],
     overload: Optional[str],
@@ -39,19 +35,27 @@ def submit(
     device: str,
     file_path: Optional[str],
     directory_path: Optional[str],
-    endpoint: str,
-    local_only: bool
+    endpoint: str
 ):
-    """Submit kernel implementation(s) to the leaderboard.
+    """Submit kernel implementation(s) to the leaderboard server.
+    
+    Requires authentication. Run 'leaderboard login' first.
     
     Examples:
     
       # Submit a single kernel file
-      backendbench submit --op add --overload Tensor --dsl cutedsl --device A100 --file add_implementation_v1.py
+      leaderboard submit --op add --overload Tensor --dsl cutedsl --device A100 --file add_v1.py
       
       # Submit multiple kernels from a directory
-      backendbench submit --dsl triton --device A100 --directory generated_kernels/
+      leaderboard submit --dsl triton --device A100 --directory generated_kernels/
     """
+    # Check authentication
+    token = load_token()
+    if not token:
+        console.print("[red]Error: Not authenticated[/red]")
+        console.print("Run [cyan]leaderboard login[/cyan] to authenticate first")
+        raise click.Abort()
+    
     # Validate input
     if not file_path and not directory_path:
         console.print("[red]Error: Either --file or --directory must be specified[/red]")
@@ -61,9 +65,6 @@ def submit(
         console.print("[red]Error: Cannot specify both --file and --directory[/red]")
         raise click.Abort()
     
-    # Initialize database
-    db = SubmissionDB()
-    
     try:
         if file_path:
             # Single file submission
@@ -72,14 +73,13 @@ def submit(
                 raise click.Abort()
             
             result = submit_single_kernel(
-                db=db,
                 operation=operation,
                 overload=overload,
                 dsl=dsl,
                 device=device,
                 file_path=file_path,
                 endpoint=endpoint,
-                local_only=local_only
+                token=token
             )
             
             if result['success']:
@@ -99,12 +99,11 @@ def submit(
         else:
             # Directory submission
             results = submit_directory_kernels(
-                db=db,
                 dsl=dsl,
                 device=device,
                 directory_path=directory_path,
                 endpoint=endpoint,
-                local_only=local_only
+                token=token
             )
             
             # Display results
@@ -135,8 +134,11 @@ def submit(
             
             console.print(table)
     
-    finally:
-        db.close()
+    except requests.exceptions.ConnectionError:
+        console.print(f"[red]Error: Could not connect to server at {endpoint}[/red]")
+        console.print("[yellow]Make sure the server is running (see server/README.md)[/yellow]")
+    except Exception as e:
+        console.print(f"[red]Error: {str(e)}[/red]")
 
 
 @cli.command()
@@ -144,77 +146,76 @@ def submit(
 @click.option('--dsl', help='Filter by DSL type')
 @click.option('--device', help='Filter by device type')
 @click.option('--limit', default=20, help='Maximum number of results (default: 20)')
-@click.option('--show-content', is_flag=True, help='Show file content')
-def list(operation: Optional[str], dsl: Optional[str], device: Optional[str], limit: int, show_content: bool):
-    """List submitted kernels from local database.
+@click.option('--endpoint', default='http://localhost:8000', help='API base URL')
+def list(operation: Optional[str], dsl: Optional[str], device: Optional[str], limit: int, endpoint: str):
+    """List submitted kernels from the server.
     
     Examples:
     
       # List all submissions
-      backendbench list
+      leaderboard list
       
       # List submissions for a specific operation
-      backendbench list --op add
-      
-      # List submissions with file content
-      backendbench list --show-content --limit 5
+      leaderboard list --op add
     """
-    db = SubmissionDB()
-    
     try:
-        submissions = db.get_submissions(
-            operation=operation,
-            dsl=dsl,
-            device=device,
-            limit=limit
-        )
+        # Build query parameters
+        params = {'limit': limit}
+        if operation:
+            params['operation'] = operation
+        if dsl:
+            params['dsl'] = dsl
+        if device:
+            params['device'] = device
+        
+        # Query server
+        response = requests.get(f"{endpoint}/api/submissions", params=params)
+        response.raise_for_status()
+        data = response.json()
+        
+        submissions = data.get('submissions', [])
         
         if not submissions:
             console.print("[yellow]No submissions found[/yellow]")
             return
         
-        console.print(f"\n[bold]Found {len(submissions)} submission(s)[/bold]\n")
+        console.print(f"\n[bold]Found {data['count']} submission(s)[/bold]\n")
         
         for sub in submissions:
             panel_content = (
                 f"[bold]ID:[/bold] {sub['id']}\n"
                 f"[bold]Operation:[/bold] {sub['operation']}\n"
-                f"[bold]Overload:[/bold] {sub['overload'] or 'N/A'}\n"
+                f"[bold]Overload:[/bold] {sub.get('overload') or 'N/A'}\n"
                 f"[bold]DSL:[/bold] {sub['dsl']}\n"
                 f"[bold]Device:[/bold] {sub['device']}\n"
                 f"[bold]File:[/bold] {sub['file_name']}\n"
+                f"[bold]Submitted by:[/bold] {sub.get('username', 'Unknown')}\n"
                 f"[bold]Submitted:[/bold] {sub['timestamp']}"
             )
-            
-            if show_content:
-                panel_content += f"\n\n[bold]Content:[/bold]\n{sub['file_content'][:500]}"
-                if len(sub['file_content']) > 500:
-                    panel_content += "\n[dim]...(truncated)[/dim]"
             
             console.print(Panel(panel_content, border_style="blue"))
             console.print()
     
-    finally:
-        db.close()
+    except requests.exceptions.ConnectionError:
+        console.print(f"[red]Error: Could not connect to server at {endpoint}[/red]")
+    except Exception as e:
+        console.print(f"[red]Error: {str(e)}[/red]")
 
 
 @cli.command()
 @click.argument('submission_id', type=int)
-def show(submission_id: int):
+@click.option('--endpoint', default='http://localhost:8000', help='API base URL')
+def show(submission_id: int, endpoint: str):
     """Show details of a specific submission by ID.
     
     Example:
     
-      backendbench show 1
+      leaderboard show 1
     """
-    db = SubmissionDB()
-    
     try:
-        submission = db.get_submission_by_id(submission_id)
-        
-        if not submission:
-            console.print(f"[red]Submission {submission_id} not found[/red]")
-            return
+        response = requests.get(f"{endpoint}/api/submissions/{submission_id}")
+        response.raise_for_status()
+        submission = response.json()
         
         # Show full details
         console.print(f"\n[bold cyan]Submission #{submission['id']}[/bold cyan]\n")
@@ -224,21 +225,109 @@ def show(submission_id: int):
         info_table.add_column("Value")
         
         info_table.add_row("Operation", submission['operation'])
-        info_table.add_row("Overload", submission['overload'] or 'N/A')
+        info_table.add_row("Overload", submission.get('overload') or 'N/A')
         info_table.add_row("DSL", submission['dsl'])
         info_table.add_row("Device", submission['device'])
         info_table.add_row("File Name", submission['file_name'])
-        info_table.add_row("File Path", submission['file_path'] or 'N/A')
+        info_table.add_row("Submitted by", submission.get('username', 'Unknown'))
         info_table.add_row("Timestamp", submission['timestamp'])
         
         console.print(info_table)
         console.print(f"\n[bold]File Content:[/bold]\n")
         console.print(Panel(submission['file_content'], border_style="green"))
     
-    finally:
-        db.close()
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 404:
+            console.print(f"[red]Submission {submission_id} not found[/red]")
+        else:
+            console.print(f"[red]Error: {str(e)}[/red]")
+    except requests.exceptions.ConnectionError:
+        console.print(f"[red]Error: Could not connect to server at {endpoint}[/red]")
+    except Exception as e:
+        console.print(f"[red]Error: {str(e)}[/red]")
+
+
+@cli.command()
+@click.option('--endpoint', default='http://localhost:8000', help='API base URL')
+def login(endpoint: str):
+    """Authenticate with GitHub.
+    
+    You need a GitHub Personal Access Token.
+    Generate one at: https://github.com/settings/tokens
+    
+    Required scopes: read:user, user:email
+    """
+    console.print("[bold]GitHub Authentication[/bold]\n")
+    console.print("Generate a Personal Access Token at: https://github.com/settings/tokens")
+    console.print("Required scopes: [cyan]read:user[/cyan], [cyan]user:email[/cyan]\n")
+    
+    github_token = Prompt.ask("Enter your GitHub token", password=True)
+    
+    if not github_token:
+        console.print("[red]Error: Token cannot be empty[/red]")
+        return
+    
+    try:
+        # Authenticate with server
+        response = requests.post(
+            f"{endpoint}/api/auth/github",
+            json={"github_token": github_token},
+            timeout=10
+        )
+        response.raise_for_status()
+        data = response.json()
+        
+        # Save token locally
+        save_token(data["access_token"], data["user"]["username"])
+        
+        console.print(Panel(
+            f"[green]✓[/green] Successfully authenticated!\n\n"
+            f"[bold]Username:[/bold] {data['user']['username']}\n"
+            f"[bold]Name:[/bold] {data['user'].get('name', 'N/A')}",
+            title="Authentication Successful",
+            border_style="green"
+        ))
+    
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 401:
+            console.print("[red]Error: Invalid GitHub token[/red]")
+        else:
+            console.print(f"[red]Error: {e.response.text}[/red]")
+    except requests.exceptions.ConnectionError:
+        console.print(f"[red]Error: Could not connect to server at {endpoint}[/red]")
+    except Exception as e:
+        console.print(f"[red]Error: {str(e)}[/red]")
+
+
+@cli.command()
+def logout():
+    """Log out and clear authentication token."""
+    config = load_config()
+    if not config:
+        console.print("[yellow]You are not logged in[/yellow]")
+        return
+    
+    clear_token()
+    console.print("[green]✓[/green] Successfully logged out")
+
+
+@cli.command()
+@click.option('--endpoint', default='http://localhost:8000', help='API base URL')
+def whoami(endpoint: str):
+    """Show current authenticated user."""
+    config = load_config()
+    
+    if not config:
+        console.print("[yellow]You are not logged in[/yellow]")
+        console.print("Run [cyan]leaderboard login[/cyan] to authenticate")
+        return
+    
+    console.print(Panel(
+        f"[bold]Username:[/bold] {config.get('username', 'Unknown')}",
+        title="Current User",
+        border_style="blue"
+    ))
 
 
 if __name__ == '__main__':
     cli()
-

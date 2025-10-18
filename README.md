@@ -2,25 +2,52 @@
 
 A command-line interface tool for submitting kernel implementations to BackendBench. This tool streamlines the submission process for both single kernel files and batch submissions from directories.
 
+## Architecture
+
+**Client-Server Model:**
+- **CLI (Client)**: Submit kernels, view submissions
+- **Server**: FastAPI server with SQLite database
+
 ## Features
 
 - Submit single kernel implementations with detailed metadata
 - Batch submit multiple kernels from a directory structure
-- Local SQLite database for tracking submissions
-- View and filter submission history
-- Support for remote API endpoints (optional)
+- View and filter submission history from server
+- Simple FastAPI server for receiving and storing submissions
 
 ## Installation
 
-### From source
-
 ```bash
-# Clone the repository
 cd leaderboard_cli
-
-# Install the package in development mode (installs all dependencies automatically)
 pip install -e .
 ```
+
+This installs both the CLI and server dependencies.
+
+## Quick Start
+
+### 1. Start the Server
+
+```bash
+cd server
+python main.py
+```
+
+Server will run at `http://localhost:8000`
+
+### 2. Authenticate
+
+```bash
+leaderboard login
+```
+
+You'll need a GitHub Personal Access Token:
+- Generate at: https://github.com/settings/tokens
+- Required scopes: `read:user`, `user:email`
+
+### 3. Use the CLI
+
+Open a new terminal:
 
 ## Usage
 
@@ -90,9 +117,20 @@ leaderboard show 1
 
 ## Command Reference
 
+### Authentication Commands
+
+#### `leaderboard login`
+Authenticate with GitHub Personal Access Token
+
+#### `leaderboard logout`
+Clear authentication and log out
+
+#### `leaderboard whoami`
+Show current authenticated user
+
 ### `leaderboard submit`
 
-Submit kernel implementation(s) to BackendBench.
+Submit kernel implementation(s) to the server. **Requires authentication.**
 
 **Options:**
 - `--op, --operation`: Operation type (e.g., add, mul, matmul) - Required for single file
@@ -101,19 +139,18 @@ Submit kernel implementation(s) to BackendBench.
 - `--device`: Device type (e.g., A100, H100, V100) - **Required**
 - `--file`: Path to a single kernel file
 - `--directory`: Path to directory containing multiple kernels
-- `--endpoint`: API endpoint URL (default: http://localhost:8000/submit)
-- `--local-only`: Store submissions locally only without sending to remote endpoint (default: True)
+- `--endpoint`: API endpoint URL (default: http://localhost:8000/api/submit)
 
 ### `leaderboard list`
 
-List submitted kernels from the local database.
+List submitted kernels from the server.
 
 **Options:**
 - `--op, --operation`: Filter by operation type
 - `--dsl`: Filter by DSL type
 - `--device`: Filter by device type
 - `--limit`: Maximum number of results (default: 20)
-- `--show-content`: Display file content in the output
+- `--endpoint`: API base URL (default: http://localhost:8000)
 
 ### `leaderboard show`
 
@@ -122,73 +159,32 @@ Show details of a specific submission by ID.
 **Arguments:**
 - `submission_id`: The ID of the submission to display
 
-## Submission Modes
+**Options:**
+- `--endpoint`: API base URL (default: http://localhost:8000)
 
-The CLI supports two modes for handling submissions:
+## How It Works
 
-### Local-Only Mode (Default)
+1. **User authenticates** → GitHub OAuth via Personal Access Token
+2. **Server issues JWT** → Token stored locally in `~/.leaderboard/config.json`
+3. **CLI submits kernels** → Sends HTTP POST with JWT Bearer token
+4. **Server verifies & stores** → Links submission to user in database
+5. **CLI queries server** → View all submissions via API
 
-By default, all submissions are stored **only** in your local SQLite database. No network requests are made.
+**Default endpoint:** `http://localhost:8000`
 
-```bash
-# Local-only (default)
-leaderboard submit --dsl triton --device A100 --file kernel.py
-```
+**Authentication:**
+- Required for: Submissions
+- Not required for: Viewing submissions
 
-**What happens:**
-- ✅ File is stored in local database (`~/.leaderboard/submissions.db`)
-- ❌ No network request is made
-- ✅ Works completely offline
-
-### Remote Submission Mode
-
-Optionally, you can also send submissions to a remote API endpoint (e.g., a leaderboard server):
-
-```bash
-# Submit both locally AND to a remote server
-leaderboard submit \
-  --dsl triton \
-  --device A100 \
-  --file kernel.py \
-  --local-only false \
-  --endpoint https://your-server.com/api/submit
-```
-
-**What happens:**
-- ✅ File is stored in local database (same as local-only mode)
-- ✅ Also sends HTTP POST request to the specified endpoint
-- ✅ You keep a local copy regardless of network status
-
-**JSON sent to endpoint:**
-```json
-{
-  "operation": "add",
-  "overload": "Tensor",
-  "dsl": "triton",
-  "device": "A100",
-  "file_name": "kernel.py",
-  "file_content": "... full file content ..."
-}
-```
-
-> **Note:** Remote submission requires a backend server at the specified endpoint. By default, no server is provided
-
-## Data Storage
-
-Submissions are stored in a local SQLite database at:
-```
-~/.leaderboard/submissions.db
-```
-
-Each submission includes:
+**Data stored on server:**
+- User information (username, name, email from GitHub)
 - Operation type
 - Overload type (if specified)
 - DSL type
 - Device type
 - File name and content
-- Original file path
 - Timestamp
-- Optional metadata
+- User who submitted
 
 ## Examples
 
@@ -215,7 +211,7 @@ leaderboard submit \
 ### Example 3: View recent submissions for a specific operation
 
 ```bash
-leaderboard list --op add --limit 5 --show-content
+leaderboard list --op add --limit 5
 ```
 
 ## Development
@@ -224,13 +220,16 @@ leaderboard list --op add --limit 5 --show-content
 
 ```
 leaderboard_cli/
-├── leaderboard/
+├── leaderboard/          # CLI package
 │   ├── __init__.py
-│   ├── cli.py          # Main CLI interface
-│   ├── database.py     # SQLite database management
-│   └── submit.py       # Submission logic
-├── examples/           # Example kernel files
-├── pyproject.toml      # Project configuration and dependencies
+│   ├── cli.py           # CLI commands
+│   └── submit.py        # Submission logic
+├── server/              # FastAPI server
+│   ├── main.py          # Server implementation
+│   ├── requirements.txt
+│   └── README.md
+├── examples/            # Example kernel files
+├── pyproject.toml
 └── README.md
 ```
 
@@ -249,3 +248,4 @@ pytest
 ## License
 
 MIT License
+

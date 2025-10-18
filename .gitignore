@@ -34,7 +34,10 @@ ENV/
 # Leaderboard specific
 .leaderboard/
 .backendbench/
-submissions.db
+server/submissions.db
+
+# Auth config (contains tokens)
+config.json
 
 # Tests
 .pytest_cache/

@@ -145,15 +145,19 @@ def submit(
 @click.option('--op', '--operation', 'operation', help='Filter by operation type')
 @click.option('--dsl', help='Filter by DSL type')
 @click.option('--device', help='Filter by device type')
+@click.option('--status', help='Filter by status (pending, evaluated)')
 @click.option('--limit', default=20, help='Maximum number of results (default: 20)')
 @click.option('--endpoint', default='http://localhost:8000', help='API base URL')
-def list(operation: Optional[str], dsl: Optional[str], device: Optional[str], limit: int, endpoint: str):
+def list(operation: Optional[str], dsl: Optional[str], device: Optional[str], status: Optional[str], limit: int, endpoint: str):
     """List submitted kernels from the server.
     
     Examples:
     
       # List all submissions
       leaderboard list
+      
+      # List pending evaluations
+      leaderboard list --status pending
       
       # List submissions for a specific operation
       leaderboard list --op add
@@ -167,6 +171,8 @@ def list(operation: Optional[str], dsl: Optional[str], device: Optional[str], li
             params['dsl'] = dsl
         if device:
             params['device'] = device
+        if status:
+            params['status'] = status
         
         # Query server
         response = requests.get(f"{endpoint}/api/submissions", params=params)
@@ -182,8 +188,12 @@ def list(operation: Optional[str], dsl: Optional[str], device: Optional[str], li
         console.print(f"\n[bold]Found {data['count']} submission(s)[/bold]\n")
         
         for sub in submissions:
+            status_emoji = "⏳" if sub.get('status') == 'pending' else "✓"
+            status_color = "yellow" if sub.get('status') == 'pending' else "green"
+            
             panel_content = (
                 f"[bold]ID:[/bold] {sub['id']}\n"
+                f"[bold]Status:[/bold] [{status_color}]{status_emoji} {sub.get('status', 'pending').title()}[/{status_color}]\n"
                 f"[bold]Operation:[/bold] {sub['operation']}\n"
                 f"[bold]Overload:[/bold] {sub.get('overload') or 'N/A'}\n"
                 f"[bold]DSL:[/bold] {sub['dsl']}\n"
@@ -192,6 +202,9 @@ def list(operation: Optional[str], dsl: Optional[str], device: Optional[str], li
                 f"[bold]Submitted by:[/bold] {sub.get('username', 'Unknown')}\n"
                 f"[bold]Submitted:[/bold] {sub['timestamp']}"
             )
+            
+            if sub.get('status') == 'evaluated' and sub.get('evaluated_at'):
+                panel_content += f"\n[bold]Evaluated:[/bold] {sub['evaluated_at']}"
             
             console.print(Panel(panel_content, border_style="blue"))
             console.print()
@@ -327,6 +340,82 @@ def whoami(endpoint: str):
         title="Current User",
         border_style="blue"
     ))
+
+
+@cli.command()
+@click.option('--limit', default=20, help='Maximum number of results (default: 20)')
+@click.option('--endpoint', default='http://localhost:8000', help='API base URL')
+def pending(limit: int, endpoint: str):
+    """List submissions that haven't been evaluated yet.
+    
+    Example:
+    
+      leaderboard pending
+    """
+    try:
+        response = requests.get(f"{endpoint}/api/submissions/pending", params={'limit': limit})
+        response.raise_for_status()
+        data = response.json()
+        
+        if data['count'] == 0:
+            console.print("[green]✓ No pending evaluations![/green]")
+            return
+        
+        console.print(f"\n[bold yellow]⏳ {data['count']} submission(s) pending evaluation[/bold yellow]\n")
+        
+        table = Table(title="Pending Evaluations")
+        table.add_column("ID", style="cyan")
+        table.add_column("Operation", style="magenta")
+        table.add_column("DSL")
+        table.add_column("Device")
+        table.add_column("User", style="blue")
+        table.add_column("Submitted")
+        
+        for sub in data['submissions']:
+            table.add_row(
+                str(sub['id']),
+                sub['operation'],
+                sub['dsl'],
+                sub['device'],
+                sub.get('username', 'Unknown'),
+                sub['timestamp'][:10]  # Just the date
+            )
+        
+        console.print(table)
+    
+    except requests.exceptions.ConnectionError:
+        console.print(f"[red]Error: Could not connect to server at {endpoint}[/red]")
+    except Exception as e:
+        console.print(f"[red]Error: {str(e)}[/red]")
+
+
+@cli.command()
+@click.option('--endpoint', default='http://localhost:8000', help='API base URL')
+def stats(endpoint: str):
+    """Show statistics about submissions.
+    
+    Example:
+    
+      leaderboard stats
+    """
+    try:
+        response = requests.get(f"{endpoint}/api/stats")
+        response.raise_for_status()
+        data = response.json()
+        
+        console.print(Panel(
+            f"[bold]Total Submissions:[/bold] {data['total_submissions']}\n"
+            f"[bold yellow]Pending Evaluations:[/bold yellow] {data['pending_evaluations']}\n"
+            f"[bold green]Evaluated:[/bold green] {data['evaluated']}\n"
+            f"[bold]Total Users:[/bold] {data['total_users']}",
+            title="Leaderboard Statistics",
+            border_style="cyan"
+        ))
+    
+    except requests.exceptions.ConnectionError:
+        console.print(f"[red]Error: Could not connect to server at {endpoint}[/red]")
+    except Exception as e:
+        console.print(f"[red]Error: {str(e)}[/red]")
 
 
 if __name__ == '__main__':

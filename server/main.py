@@ -45,7 +45,7 @@ def init_db():
             )
         """)
         
-        # Submissions table with user tracking
+        # Submissions table with user tracking and evaluation status
         conn.execute("""
             CREATE TABLE IF NOT EXISTS submissions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,6 +57,9 @@ def init_db():
                 file_name TEXT NOT NULL,
                 file_content TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                evaluation_result TEXT,
+                evaluated_at TEXT,
                 FOREIGN KEY (user_id) REFERENCES users (id)
             )
         """)
@@ -197,6 +200,7 @@ async def list_submissions(
     operation: Optional[str] = None,
     dsl: Optional[str] = None,
     device: Optional[str] = None,
+    status: Optional[str] = None,
     limit: int = 20
 ):
     """List submissions with optional filters."""
@@ -217,6 +221,9 @@ async def list_submissions(
     if device:
         query += " AND s.device = ?"
         params.append(device)
+    if status:
+        query += " AND s.status = ?"
+        params.append(status)
     
     query += " ORDER BY s.timestamp DESC LIMIT ?"
     params.append(limit)
@@ -225,6 +232,26 @@ async def list_submissions(
         cursor = conn.execute(query, params)
         rows = cursor.fetchall()
         
+    return {
+        "count": len(rows),
+        "submissions": [dict(row) for row in rows]
+    }
+
+
+@app.get("/api/submissions/pending")
+async def get_pending_submissions(limit: Optional[int] = 20):
+    """Get submissions that haven't been evaluated yet."""
+    with get_db() as conn:
+        cursor = conn.execute("""
+            SELECT s.*, u.username, u.name as user_name
+            FROM submissions s
+            JOIN users u ON s.user_id = u.id
+            WHERE s.status = 'pending'
+            ORDER BY s.timestamp ASC
+            LIMIT ?
+        """, (limit,))
+        rows = cursor.fetchall()
+    
     return {
         "count": len(rows),
         "submissions": [dict(row) for row in rows]
@@ -249,6 +276,64 @@ async def get_submission(submission_id: int):
     return dict(row)
 
 
+@app.post("/api/submissions/{submission_id}/evaluate")
+async def mark_evaluated(
+    submission_id: int,
+    result: Optional[str] = None,
+    user: dict = Depends(verify_token)
+):
+    """Mark a submission as evaluated. Requires authentication."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        # Check if submission exists
+        cursor.execute("SELECT id FROM submissions WHERE id = ?", (submission_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Submission not found")
+        
+        # Update status
+        cursor.execute("""
+            UPDATE submissions 
+            SET status = 'evaluated', 
+                evaluation_result = ?,
+                evaluated_at = ?
+            WHERE id = ?
+        """, (result, datetime.now().isoformat(), submission_id))
+        conn.commit()
+    
+    return {"success": True, "message": "Submission marked as evaluated"}
+
+
+@app.get("/api/stats")
+async def get_stats():
+    """Get statistics about submissions."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        # Total submissions
+        cursor.execute("SELECT COUNT(*) as total FROM submissions")
+        total = cursor.fetchone()["total"]
+        
+        # Pending submissions
+        cursor.execute("SELECT COUNT(*) as pending FROM submissions WHERE status = 'pending'")
+        pending = cursor.fetchone()["pending"]
+        
+        # Evaluated submissions
+        cursor.execute("SELECT COUNT(*) as evaluated FROM submissions WHERE status = 'evaluated'")
+        evaluated = cursor.fetchone()["evaluated"]
+        
+        # Total users
+        cursor.execute("SELECT COUNT(*) as users FROM users")
+        users = cursor.fetchone()["users"]
+    
+    return {
+        "total_submissions": total,
+        "pending_evaluations": pending,
+        "evaluated": evaluated,
+        "total_users": users
+    }
+
+
 @app.get("/")
 async def root():
     """Root endpoint."""
@@ -257,7 +342,10 @@ async def root():
         "endpoints": {
             "submit": "POST /api/submit",
             "list": "GET /api/submissions",
-            "get": "GET /api/submissions/{id}"
+            "pending": "GET /api/submissions/pending",
+            "get": "GET /api/submissions/{id}",
+            "evaluate": "POST /api/submissions/{id}/evaluate",
+            "stats": "GET /api/stats"
         }
     }
 
